@@ -1,11 +1,17 @@
 package com.pixelcatt.dc_whitelist_linker;
 
-
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitRunnable;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.time.Instant;
 import java.util.*;
@@ -125,6 +131,10 @@ public class WhitelistManager {
     }
 
     public void removeExpiredAuthCodesAsync() {
+        if (plugin.adminOnlyMode) {
+            return;
+        }
+
         dbWorker.execute(() -> {
             try (PreparedStatement ps = connection.prepareStatement(
                     "DELETE FROM linking_process WHERE expiry_time < ?")) {
@@ -170,6 +180,21 @@ public class WhitelistManager {
         return false;
     }
 
+    public void createLink(String dcUUID, String dcName, String mcUUID, String mcName) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "REPLACE INTO linked_accounts(dc_uuid, dc_name, mc_uuid, mc_name) VALUES (?, ?, ?, ?)")) {
+            ps.setString(1, dcUUID);
+            ps.setString(2, dcName);
+            ps.setString(3, mcUUID);
+            ps.setString(4, mcName);
+            ps.executeUpdate();
+
+            dcBot.finishLinking(dcUUID, mcName);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
     public void startUnLinking(String dcUUID, String mcUUID) {
 
         try (PreparedStatement ps = connection.prepareStatement(
@@ -179,23 +204,35 @@ public class WhitelistManager {
 
             dcBot.finishUnLinking(dcUUID);
 
-            // ----------------------------------------------------------- \\
-
             Player player = Bukkit.getPlayer(UUID.fromString(mcUUID));
 
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    if (player != null) {
-                        if (player.isOnline()) {
+            if (plugin.adminOnlyMode) {
+                kickPlayerUnWL(player);
+            } else {
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        if (player != null && player.isOnline()) {
                             player.kickPlayer(ChatColor.translateAlternateColorCodes('§', "§aYour Discord-Account has been Unlinked!"));
                         }
                     }
-                }
-            }.runTaskLater(plugin, 50L);
+                }.runTaskLater(plugin, 50L);
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }
+    }
+
+    public void kickPlayerUnWL(Player plr) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (plr != null) {
+                plr.kickPlayer(ChatColor.translateAlternateColorCodes('&', "&cYou are not Whitelisted on this Server!"));
+            }
+        });
+    }
+
+    public String getDiscordUserID(String name) {
+        return dcBot.getUserID(name);
     }
 
     public void unLinkRemovedMember(String dcUUID) {
@@ -555,5 +592,118 @@ public class WhitelistManager {
         }
 
         return "ERROR";
+    }
+
+    public String getMinecraftUuidFromName(String mcName) {
+        return getMinecraftUUIDfromName(mcName);
+    }
+
+    public String getDiscordUuidFromMcName(String mcName) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT DISTINCT dc_uuid FROM linked_accounts WHERE mc_name = ? LIMIT 1")) {
+            ps.setString(1, mcName);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                return rs.getString("dc_uuid");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return "ERROR";
+        }
+
+        return "ERROR";
+    }
+
+    public String getDiscordNameFromMinecraftUUID(String mcUUID) {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT DISTINCT dc_name FROM linked_accounts WHERE mc_uuid = ? LIMIT 1")) {
+            ps.setString(1, mcUUID);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                return rs.getString("dc_name");
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return "ERROR";
+        }
+
+        return "ERROR";
+    }
+
+    public static UUID getUUID(String name) {
+        try {
+            if (name.startsWith(".")) {
+                URL url = new URL(
+                        "https://api.geysermc.org/v2/utils/uuid/bedrock_or_java/"
+                                + name + "?prefix=."
+                );
+
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(3000);
+                connection.setReadTimeout(3000);
+
+                int status = connection.getResponseCode();
+
+                if (status != 200) {
+                    return null;
+                }
+
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(connection.getInputStream()))) {
+
+                    JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
+                    String id = json.get("id").getAsString();
+
+                    return UUID.fromString(
+                            id.substring(0, 8) + "-" +
+                                    id.substring(8, 12) + "-" +
+                                    id.substring(12, 16) + "-" +
+                                    id.substring(16, 20) + "-" +
+                                    id.substring(20)
+                    );
+                }
+            }
+
+            URL url = new URL(
+                    "https://api.mojang.com/users/profiles/minecraft/" + name
+            );
+
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(3000);
+            connection.setReadTimeout(3000);
+
+            int status = connection.getResponseCode();
+
+            if (status == 204 || status == 404) {
+                return UUID.nameUUIDFromBytes(
+                        ("OfflinePlayer:" + name).getBytes(StandardCharsets.UTF_8)
+                );
+            }
+
+            if (status != 200) {
+                return null;
+            }
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream()))) {
+
+                JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
+                String id = json.get("id").getAsString();
+
+                return UUID.fromString(
+                        id.substring(0, 8) + "-" +
+                                id.substring(8, 12) + "-" +
+                                id.substring(12, 16) + "-" +
+                                id.substring(16, 20) + "-" +
+                                id.substring(20)
+                );
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
     }
 }

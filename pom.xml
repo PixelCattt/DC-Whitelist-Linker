@@ -6,7 +6,7 @@
 
     <groupId>com.pixelcatt.dc_whitelist_linker</groupId>
     <artifactId>DC-Whitelist-Linker</artifactId>
-    <version>1.2.1</version>
+    <version>1.2.2</version>
     <packaging>jar</packaging>
 
     <name>DC-Whitelist-Linker</name>
@@ -32,6 +32,11 @@
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
             <version>20240303</version>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>2.10.1</version>
         </dependency>
         <dependency>
             <groupId>net.dv8tion</groupId>

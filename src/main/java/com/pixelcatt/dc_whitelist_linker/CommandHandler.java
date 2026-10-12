@@ -1,6 +1,6 @@
 package com.pixelcatt.dc_whitelist_linker;
 
-
+import org.bukkit.ChatColor;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
 import java.util.UUID;
@@ -21,15 +21,20 @@ public class CommandHandler implements CommandExecutor {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
 
-        if (!(sender instanceof Player)) {
-            sender.sendMessage("§cOnly Players can run this Command!");
-            return true;
-        }
-
-        Player player = (Player) sender;
-
         switch (command.getName()) {
-             case "unlinkdc":
+            case "unlinkdc":
+                if (plugin.adminOnlyMode) {
+                    sender.sendMessage("§cThis Command is not available in Admin-Only Mode!");
+                    return true;
+                }
+
+                if (!(sender instanceof Player)) {
+                    sender.sendMessage("§cOnly Players can run this Command!");
+                    return true;
+                }
+
+                Player player = (Player) sender;
+
                 if (player.hasPermission("dcwhitelistlinker.unlinkdc")) {
                     String mcUUID = player.getUniqueId().toString();
 
@@ -50,34 +55,121 @@ public class CommandHandler implements CommandExecutor {
                 return true;
 
 
-            case "forceunlink":
-                if (player.hasPermission("dcwhitelistlinker.forceunlink")) {
-                    if (args.length == 1 || args.length == 2) {
-                        String mcUUID = manager.getMinecraftUUIDfromName(args[0]);
+            case "addwhitelist":
+                if (sender.hasPermission("dcwhitelistlinker.addwhitelist")) {
+                    if (args.length == 2) {
+                        String mcName = args[0];
+                        String dcName = args[1];
 
-                        if (!mcUUID.equals("ERROR")) {
-                            String dcUUID = manager.getDiscordUUID(UUID.fromString(mcUUID));
+                        UUID uuid = WhitelistManager.getUUID(mcName);
 
-                            if (!dcUUID.equals("ERROR")) {
-                                sender.sendMessage("§aUnlinking " + args[0] + "'s Discord-Account: " + manager.getDiscordNameFromUUID(dcUUID));
-                                manager.startUnLinking(dcUUID, mcUUID);
-
-                                if (args.length == 2) {
-                                    if (args[1].equals("true")) {
-                                        manager.dcBot.removeAccessRole(dcUUID);
-                                    }
-                                }
-                            } else {
-                                sender.sendMessage("§c" + args[0] + " does not have a linked Discord-Account.");
-                            }
-                        } else {
-                            sender.sendMessage("§cFailed to determine " + args[0] + "'s UUID!");
+                        if (uuid == null) {
+                            sender.sendMessage(ChatColor.RED + "Could not find Minecraft player: " + mcName);
+                            return true;
                         }
+
+                        String mcUUID = uuid.toString();
+                        String dcUUID = manager.getDiscordUserID(dcName);
+
+                        if (dcUUID.equals("ERROR")) {
+                            sender.sendMessage(ChatColor.RED + "Could not find Discord user: " + dcName);
+                            return true;
+                        }
+
+                        boolean discordAlreadyLinked = manager.linkedMinecraftAccountExists(dcUUID);
+                        boolean minecraftAlreadyLinked = manager.linkedDiscordAccountExists(mcUUID);
+
+                        if (!discordAlreadyLinked && !minecraftAlreadyLinked) {
+                            manager.createLink(dcUUID, dcName, mcUUID, mcName);
+
+                            sender.sendMessage(ChatColor.GREEN
+                                    + "Successfully linked "
+                                    + mcName
+                                    + " to "
+                                    + dcName);
+
+                        } else if (discordAlreadyLinked) {
+                            String linkedMcName = manager.getMinecraftName(dcUUID);
+
+                            sender.sendMessage(ChatColor.RED
+                                    + "Discord account "
+                                    + dcName
+                                    + " is already linked to Minecraft account: "
+                                    + linkedMcName);
+
+                        } else {
+                            String linkedDcName = manager.getDiscordNameFromMinecraftUUID(mcUUID);
+
+                            sender.sendMessage(ChatColor.RED
+                                    + "Minecraft account "
+                                    + mcName
+                                    + " is already linked to Discord account: "
+                                    + linkedDcName);
+                        }
+
                     } else {
-                        sender.sendMessage("§cUsage: /forceunlink <Target> [<Remove-Access-Role>]");
+                        sender.sendMessage(ChatColor.RED
+                                + "Usage: /addwhitelist <Minecraft-Name> <Discord-Name>");
                     }
+
                 } else {
-                    sender.sendMessage("§cYou do not have permission to run this Command!");
+                    sender.sendMessage(ChatColor.RED
+                            + "You do not have permission to run this Command!");
+                }
+
+                return true;
+
+
+            case "remwhitelist":
+                if (!sender.hasPermission("dcwhitelistlinker.remwhitelist")) {
+                    sender.sendMessage(ChatColor.RED
+                            + "You do not have permission to run this command!");
+                    return true;
+                }
+
+                if (args.length != 1) {
+                    sender.sendMessage(ChatColor.RED
+                            + "Usage: /remwhitelist <Minecraft-Name>");
+                    return true;
+                }
+
+                String targetMcName = args[0];
+                String targetMcUUID = manager.getMinecraftUuidFromName(targetMcName);
+
+                if (targetMcUUID.equals("ERROR")) {
+                    sender.sendMessage(ChatColor.RED
+                            + "Could not find Minecraft player: "
+                            + targetMcName);
+                    return true;
+                }
+
+                String targetDcUUID = manager.getDiscordUuidFromMcName(targetMcName);
+
+                if (targetDcUUID.equals("ERROR")) {
+                    sender.sendMessage(ChatColor.RED
+                            + "Minecraft account "
+                            + targetMcName
+                            + " does not have a linked Discord account.");
+                    return true;
+                }
+
+                String targetDcName = manager.getDiscordNameFromUUID(targetDcUUID);
+
+                if (manager.linkedMinecraftAccountExists(targetDcUUID) && manager.linkedDiscordAccountExists(targetMcUUID)) {
+                    manager.startUnLinking(targetDcUUID, targetMcUUID);
+
+                    sender.sendMessage(ChatColor.GREEN
+                            + "Successfully unlinked "
+                            + targetMcName
+                            + " from "
+                            + targetDcName
+                            + ".");
+
+                } else {
+                    sender.sendMessage(ChatColor.RED
+                            + "Minecraft account "
+                            + targetMcName
+                            + " is not linked to any Discord Account.");
                 }
 
                 return true;

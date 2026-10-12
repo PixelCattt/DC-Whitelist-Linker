@@ -1,6 +1,5 @@
 package com.pixelcatt.dc_whitelist_linker;
 
-
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -24,6 +23,7 @@ public class DCWhitelistLinker extends JavaPlugin {
     private LoginListener loginListener;
     private JoinListener joinListener;
 
+    public boolean adminOnlyMode;
 
     @Override
     public void onEnable() {
@@ -79,6 +79,7 @@ public class DCWhitelistLinker extends JavaPlugin {
         String botToken = getConfig().getString("bot-token", "YOUR-BOT-TOKEN-HERE");
         String serverId = getConfig().getString("server-id", "YOUR-SERVER-ID-HERE");
         String whitelistRoleId = getConfig().getString("whitelist-role-id", "YOUR-ROLE-ID-HERE");
+        boolean adminOnly = getConfig().getBoolean("admin-only-mode", false);
         boolean requireAccessRole = getConfig().getBoolean("require-access-role", false);
         boolean removeAccessRoleOnUnlink = getConfig().getBoolean("remove-access-role-on-unlink", false);
         String accessRoleId = getConfig().getString("access-role-id", "YOUR-ROLE-ID-HERE");
@@ -102,6 +103,9 @@ public class DCWhitelistLinker extends JavaPlugin {
 
         dcBot.whitelistRoleId = whitelistRoleId;
         config.set("whitelist-role-id", whitelistRoleId);
+
+        adminOnlyMode = adminOnly;
+        config.set("admin-only-mode", adminOnly);
 
         dcBot.accessRoleRequired = requireAccessRole;
         config.set("require-access-role", requireAccessRole);
@@ -137,10 +141,12 @@ public class DCWhitelistLinker extends JavaPlugin {
         TabCompleter tabCompleter = new TabCompleter(this, this.manager);
 
         getCommand("unlinkdc").setExecutor(commandHandler);
-        getCommand("forceunlink").setExecutor(commandHandler);
+        getCommand("addwhitelist").setExecutor(commandHandler);
+        getCommand("remwhitelist").setExecutor(commandHandler);
 
         getCommand("unlinkdc").setTabCompleter(tabCompleter);
-        getCommand("forceunlink").setTabCompleter(tabCompleter);
+        getCommand("addwhitelist").setTabCompleter(tabCompleter);
+        getCommand("remwhitelist").setTabCompleter(tabCompleter);
     }
 
     private void checkForUpdates() {

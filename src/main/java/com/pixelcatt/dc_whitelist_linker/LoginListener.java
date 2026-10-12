@@ -1,5 +1,6 @@
 package com.pixelcatt.dc_whitelist_linker;
 
+import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -24,6 +25,19 @@ public class LoginListener implements Listener {
         UUID uuid = event.getUniqueId();
 
         if (manager.getMinecraftNameFromUUID(uuid).equals("ERROR")) {
+            if (plugin.adminOnlyMode) {
+                if (Bukkit.getOfflinePlayer(uuid).isOp()) {
+                    return;
+                }
+
+                event.disallow(
+                        AsyncPlayerPreLoginEvent.Result.KICK_BANNED,
+                        ChatColor.translateAlternateColorCodes('&',
+                                "&cYou are not Whitelisted on this Server!")
+                );
+                return;
+            }
+
             if (!manager.isLinking(uuid.toString())) {
                 String authCode = genAuthCode();
 
@@ -54,7 +68,7 @@ public class LoginListener implements Listener {
                 AsyncPlayerPreLoginEvent.Result.KICK_BANNED,
                 ChatColor.translateAlternateColorCodes('&',
                         "&aPlease Link your Discord Account!\n" +
-                                "Use the &6/linkmc " + authCode + " &aCommand on Discord!")
+                        "Use the &6/linkmc " + authCode + " &aCommand on Discord!")
         );
     }
 }

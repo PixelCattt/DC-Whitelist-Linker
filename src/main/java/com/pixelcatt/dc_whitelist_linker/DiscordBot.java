@@ -1,6 +1,7 @@
 package com.pixelcatt.dc_whitelist_linker;
 
-
+import org.bukkit.Bukkit;
+import org.bukkit.scheduler.BukkitRunnable;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.Permission;
@@ -18,11 +19,13 @@ import net.dv8tion.jda.api.interactions.commands.DefaultMemberPermissions;
 import net.dv8tion.jda.api.interactions.commands.OptionMapping;
 import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
+import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.utils.ChunkingFilter;
 import net.dv8tion.jda.api.utils.MemberCachePolicy;
-import org.bukkit.Bukkit;
-import org.bukkit.scheduler.BukkitRunnable;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 
 
 public class DiscordBot extends ListenerAdapter {
@@ -62,14 +65,24 @@ public class DiscordBot extends ListenerAdapter {
                     .addEventListeners(this)
                     .build();
 
-            jda.updateCommands().addCommands(
-                    Commands.slash("linkmc", "Link your Minecraft-Account to your Discord-Account.")
-                            .addOption(OptionType.STRING, "auth_code", "Your Auth-Code from Minecraft.", true),
-                    Commands.slash("unlinkmc", "Unlink your Minecraft-Account from your Discord-Account."),
-                    Commands.slash("forceunlink", "Unlink another Player's Minecraft-Account from their Discord-Account.")
-                            .addOption(OptionType.USER, "target", "The Player to UnLink.", true)
-                            .setDefaultPermissions(DefaultMemberPermissions.enabledFor(Permission.ADMINISTRATOR))
-            ).queue();
+            List<SlashCommandData> slashCommands = new ArrayList<>();
+
+            if (!plugin.adminOnlyMode) {
+                slashCommands.add(Commands.slash("linkmc", "Link your Minecraft-Account to your Discord-Account.")
+                        .addOption(OptionType.STRING, "auth_code", "Your Auth-Code from Minecraft.", true));
+                slashCommands.add(Commands.slash("unlinkmc", "Unlink your Minecraft-Account from your Discord-Account."));
+            }
+
+            slashCommands.add(Commands.slash("addwhitelist", "Link a Minecraft and Discord Account")
+                    .addOption(OptionType.STRING, "minecraft_name", "The Minecraft Username.", true)
+                    .addOption(OptionType.USER, "discord_user", "The Discord User.", true)
+                    .setDefaultPermissions(DefaultMemberPermissions.enabledFor(Permission.ADMINISTRATOR)));
+            slashCommands.add(Commands.slash("remwhitelist", "Unlink a Minecraft and Discord Account")
+                    .addOption(OptionType.STRING, "minecraft_name", "The Minecraft Username.", false)
+                    .addOption(OptionType.USER, "discord_user", "The Discord User.", false)
+                    .setDefaultPermissions(DefaultMemberPermissions.enabledFor(Permission.ADMINISTRATOR)));
+
+            jda.updateCommands().addCommands(slashCommands).queue();
 
             new BukkitRunnable() {
                 @Override
@@ -84,62 +97,99 @@ public class DiscordBot extends ListenerAdapter {
 
     public void UpdateAllMembersTask() {
         Bukkit.getScheduler().runTaskTimer(plugin, () -> {
-            manager.dbWorker.execute(() -> {
-                manager.getAllLinkedAccountsAsync().thenAccept(linkedAccounts -> {
-                    Guild guild = jda.getGuildById(guildId);
+            Runnable syncTask = () -> manager.getAllLinkedAccountsAsync().thenAccept(linkedAccounts -> {
+                Guild guild = jda.getGuildById(guildId);
 
-                    if (guild != null) {
-                        Role whitelistRole = guild.getRoleById(whitelistRoleId);
+                if (guild != null) {
+                    Role whitelistRole = guild.getRoleById(whitelistRoleId);
 
-                        if (whitelistRole != null) {
-                            for (Member member : guild.getMembersWithRoles(whitelistRole)) {
-                                boolean isLinked = linkedAccounts.stream().anyMatch(account -> account[0].equals(member.getId()));
+                    if (whitelistRole != null) {
+                        for (Member member : guild.getMembersWithRoles(whitelistRole)) {
+                            boolean isLinked = linkedAccounts.stream().anyMatch(account -> account[0].equals(member.getId()));
 
-                                if (!isLinked) {
-                                    plugin.getLogger().info("Cleaning Up Non-Linked Discord User: " + member.getUser().getName());
-                                    finishUnLinking(member.getId());
-                                }
+                            if (!isLinked) {
+                                plugin.getLogger().info("Cleaning Up Non-Linked Discord User: " + member.getUser().getName());
+                                finishUnLinking(member.getId());
                             }
-                        }
-
-                        for (Object[] account : linkedAccounts) {
-                            String dcUUID = (String) account[0];
-                            String dcName = (String) account[1];
-                            String mcUUID = (String) account[2];
-                            String mcName = (String) account[3];
-
-                            Member member = guild.getMemberById(dcUUID);
-
-                            if (member == null || member.getRoles().stream().noneMatch(r -> r.getId().equals(whitelistRoleId)) || (accessRoleRequired && member.getRoles().stream().noneMatch(r -> r.getId().equals(accessRoleId)))) {
-                                plugin.getLogger().info("Auto Unlinking Discord User: " + dcName);
-                                manager.startUnLinking(dcUUID, mcUUID);
-                                continue;
-                            }
-
-                            member.modifyNickname(mcName).queue();
                         }
                     }
-                });
 
-                manager.removeExpiredAuthCodesAsync();
+                    for (Object[] account : linkedAccounts) {
+                        String dcUUID = (String) account[0];
+                        String dcName = (String) account[1];
+                        String mcUUID = (String) account[2];
+                        String mcName = (String) account[3];
+
+                        Member member = guild.getMemberById(dcUUID);
+
+                        boolean shouldUnlink = member == null || member.getRoles().stream().noneMatch(r -> r.getId().equals(whitelistRoleId));
+
+                        if (!plugin.adminOnlyMode) {
+                            shouldUnlink = shouldUnlink || (accessRoleRequired && member != null && member.getRoles().stream().noneMatch(r -> r.getId().equals(accessRoleId)));
+                        }
+
+                        if (shouldUnlink) {
+                            plugin.getLogger().info("Auto Unlinking Discord User: " + dcName);
+                            manager.startUnLinking(dcUUID, mcUUID);
+                            continue;
+                        }
+
+                        member.modifyNickname(mcName).queue();
+                    }
+                }
             });
+
+            if (plugin.adminOnlyMode) {
+                syncTask.run();
+            } else {
+                manager.dbWorker.execute(() -> {
+                    syncTask.run();
+                    manager.removeExpiredAuthCodesAsync();
+                });
+            }
         }, 0L, 15 * 60 * 20L);
+    }
+
+    public String getUserID(String name) {
+        Guild guild = jda.getGuildById(guildId);
+
+        if (guild != null) {
+            Member member = guild.getMembers().stream()
+                    .filter(m -> m.getUser().getName().equals(name))
+                    .findFirst()
+                    .orElse(null);
+
+            if (member != null) {
+                return member.getId();
+            }
+        }
+
+        return "ERROR";
     }
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
         if (event.getGuild() != null) {
             if (event.getGuild().getId().equals(guildId)) {
+                String commandName = event.getName();
+
+                if ("addwhitelist".equals(commandName) || "remwhitelist".equals(commandName)) {
+                    handleWhitelistSlashCommand(event);
+                    return;
+                }
+
+                if (plugin.adminOnlyMode) {
+                    return;
+                }
+
                 if (useLinkingChannel) {
-                    if (!event.getName().equals("forceunlink")) {
-                        if (!event.getChannel().getId().equals(linkingChannelId)) {
-                            event.reply("Please use the <#" + linkingChannelId + "> Channel for Linking Commands!").setEphemeral(true).queue();
-                            return;
-                        }
+                    if (!event.getChannel().getId().equals(linkingChannelId)) {
+                        event.reply("Please use the <#" + linkingChannelId + "> Channel for Linking Commands!").setEphemeral(true).queue();
+                        return;
                     }
                 }
 
-                switch (event.getName()) {
+                switch (commandName) {
                     case "linkmc":
                         String authCode = event.getOption("auth_code", OptionMapping::getAsString);
 
@@ -196,31 +246,132 @@ public class DiscordBot extends ListenerAdapter {
                         }
 
                         break;
-
-
-                    case "forceunlink":
-                        User target = event.getOption("target", OptionMapping::getAsUser);
-
-                        if (target != null) {
-                            String targetDcUUID = target.getId();
-
-                            if (!targetDcUUID.equals("ERROR")) {
-                                String targetMcUUID = manager.getMinecraftUUID(targetDcUUID);
-
-                                if (!targetMcUUID.equals("ERROR")) {
-                                    event.reply("Unlinking " + target.getName() + "'s Minecraft-Account: " + manager.getMinecraftName(targetDcUUID)).setEphemeral(true).queue();
-                                    manager.startUnLinking(targetDcUUID, targetMcUUID);
-                                } else {
-                                    event.reply(target.getName() + " does not have a linked Minecraft-Account.").setEphemeral(true).queue();
-                                }
-                            } else {
-                                event.reply("Failed to determine the User's UUID!").setEphemeral(true).queue();
-                            }
-                        }
-
-                        break;
                 }
             }
+        }
+    }
+
+    private void handleWhitelistSlashCommand(SlashCommandInteractionEvent event) {
+        switch (event.getName()) {
+            case "addwhitelist":
+                if (!event.getMember().hasPermission(Permission.ADMINISTRATOR)) {
+                    event.reply("You do not have permission to run this command!").setEphemeral(true).queue();
+                    return;
+                }
+
+                User discordUser = event.getOption("discord_user", OptionMapping::getAsUser);
+                String mcName = event.getOption("minecraft_name", OptionMapping::getAsString);
+
+                if (discordUser == null || mcName == null) {
+                    event.reply("Please provide both a Discord user and Minecraft name!").setEphemeral(true).queue();
+                    return;
+                }
+
+                String dcUUID = discordUser.getId();
+                UUID uuid = WhitelistManager.getUUID(mcName);
+
+                if (uuid == null) {
+                    event.reply("Could not find Minecraft player with name: " + escapeDiscordFormatting(mcName))
+                            .setEphemeral(true)
+                            .queue();
+                    return;
+                }
+
+                String mcUUID = uuid.toString();
+                boolean discordLinked = manager.linkedMinecraftAccountExists(dcUUID);
+                boolean minecraftLinked = manager.linkedDiscordAccountExists(mcUUID);
+
+                if (!discordLinked && !minecraftLinked) {
+                    manager.createLink(dcUUID, discordUser.getName(), mcUUID, mcName);
+
+                    event.reply("Successfully linked " + escapeDiscordFormatting(mcName) + " to <@" + dcUUID + ">!")
+                            .setEphemeral(true)
+                            .queue();
+
+                } else if (discordLinked) {
+                    String linkedMcName = manager.getMinecraftName(dcUUID);
+
+                    event.reply("Discord account <@" + dcUUID + "> is already linked to Minecraft account: "
+                                    + escapeDiscordFormatting(linkedMcName))
+                            .setEphemeral(true)
+                            .queue();
+
+                } else {
+                    String linkedDcName = manager.getDiscordNameFromMinecraftUUID(mcUUID);
+
+                    event.reply("Minecraft account: " + escapeDiscordFormatting(mcName)
+                                    + " is already linked to Discord account: "
+                                    + linkedDcName)
+                            .setEphemeral(true)
+                            .queue();
+                }
+                break;
+
+            case "remwhitelist":
+                if (!event.getMember().hasPermission(Permission.ADMINISTRATOR)) {
+                    event.reply("You do not have permission to run this command!").setEphemeral(true).queue();
+                    return;
+                }
+
+                User userOption = event.getOption("discord_user", OptionMapping::getAsUser);
+                String mcNameOption = event.getOption("minecraft_name", OptionMapping::getAsString);
+
+                if (userOption == null && mcNameOption == null) {
+                    event.reply("Please provide atleast one of Discord user and Minecraft name!").setEphemeral(true).queue();
+                    return;
+                }
+
+                String targetMcUUID;
+                String targetMcName;
+                String targetDcUUID;
+                String targetDcName;
+
+                if (userOption != null && mcNameOption != null) {
+                    targetMcUUID = manager.getMinecraftUuidFromName(mcNameOption);
+                    targetMcName = mcNameOption;
+                    targetDcUUID = userOption.getId();
+                    targetDcName = userOption.getName();
+
+                    if (targetMcUUID.equals("ERROR")) {
+                        event.reply("Discord account <@" + targetDcUUID + "> does not have a linked Minecraft account.").setEphemeral(true).queue();
+                        return;
+                    }
+
+                } else if (mcNameOption == null) {
+                    targetDcUUID = userOption.getId();
+                    targetDcName = userOption.getName();
+                    targetMcUUID = manager.getMinecraftUUID(targetDcUUID);
+                    targetMcName = manager.getMinecraftName(targetDcUUID);
+
+                    if (targetMcUUID.equals("ERROR")) {
+                        event.reply("Discord account <@" + targetDcUUID + "> does not have a linked Minecraft account.").setEphemeral(true).queue();
+                        return;
+                    }
+                } else {
+                    targetMcUUID = manager.getMinecraftUuidFromName(mcNameOption);
+                    targetMcName = mcNameOption;
+
+                    if (targetMcUUID.equals("ERROR")) {
+                        event.reply("Could not find Minecraft player with name: " + targetMcName).setEphemeral(true).queue();
+                        return;
+                    }
+
+                    targetDcUUID = manager.getDiscordUuidFromMcName(targetMcName);
+                    targetDcName = manager.getDiscordNameFromUUID(targetDcUUID);
+
+                    if (targetDcUUID.equals("ERROR")) {
+                        event.reply("Minecraft account " + escapeDiscordFormatting(targetMcName) + " does not have a linked Discord account.").setEphemeral(true).queue();
+                        return;
+                    }
+                }
+
+                if (manager.linkedMinecraftAccountExists(targetDcUUID) && manager.linkedDiscordAccountExists(targetMcUUID)) {
+                    manager.startUnLinking(targetDcUUID, targetMcUUID);
+                    event.reply("Successfully unlinked " + escapeDiscordFormatting(targetMcName) + " from <@" + targetDcUUID + ">!").setEphemeral(true).queue();
+                } else {
+                    event.reply(targetMcName + " is not linked to Discord account: " + targetDcName).setEphemeral(true).queue();
+                }
+                break;
         }
     }
 
@@ -243,13 +394,18 @@ public class DiscordBot extends ListenerAdapter {
                         }
 
                         event.getGuild().retrieveMemberById(userId).queue(member -> {
-                            boolean hasAccessRole = member.getRoles().stream()
-                                    .anyMatch(r -> r.getId().equals(accessRoleId));
-
                             boolean hasMemberRole = member.getRoles().stream()
                                     .anyMatch(r -> r.getId().equals(whitelistRoleId));
 
-                            if (!hasAccessRole || !hasMemberRole) {
+                            boolean shouldUnlink = !hasMemberRole;
+
+                            if (!plugin.adminOnlyMode) {
+                                boolean hasAccessRole = member.getRoles().stream()
+                                        .anyMatch(r -> r.getId().equals(accessRoleId));
+                                shouldUnlink = !hasAccessRole || !hasMemberRole;
+                            }
+
+                            if (shouldUnlink) {
                                 String mcUUID = manager.getMinecraftUUID(userId);
                                 if (mcUUID != null && !mcUUID.equals("ERROR")) {
                                     plugin.getLogger().info("Auto Unlinking Discord User: " + userName);
@@ -264,6 +420,7 @@ public class DiscordBot extends ListenerAdapter {
     @Override
     public void onGuildMemberRemove(GuildMemberRemoveEvent event) {
         if (event.getGuild().getId().equals(guildId)) {
+            plugin.getLogger().info("Player left Discord: " + event.getUser().getName());
             manager.unLinkRemovedMember(event.getUser().getId());
         }
     }
@@ -355,17 +512,30 @@ public class DiscordBot extends ListenerAdapter {
     }
 
     public boolean botRoleHighEnoughToManage(Guild guild, Member member) {
-        if (guild != null) {
-            if (member != null) {
-                Member bot = guild.getSelfMember();
+        if (guild != null && member != null) {
+            Member bot = guild.getSelfMember();
 
-                if (bot != null) {
-                    return bot.getRoles().get(0).getPosition() >= member.getRoles().get(0).getPosition();
+            if (bot != null) {
+                if (bot.getRoles().isEmpty()) {
+                    return false;
                 }
+
+                if (member.getRoles().isEmpty()) {
+                    return true;
+                }
+
+                return bot.getRoles().get(0).getPosition() >= member.getRoles().get(0).getPosition();
             }
         }
 
         return false;
+    }
+
+    private String escapeDiscordFormatting(String text) {
+        return text.replace("\\", "\\\\")
+                .replace("*", "\\*")
+                .replace("_", "\\_")
+                .replace("~", "\\~");
     }
 
     public void stopBot() {

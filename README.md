@@ -10,15 +10,15 @@
 
 
 ## 🎯 Features
-- **Self Whitelisting by Players**  
-They can whitelist themselves by Linking their Discord and Minecraft Accounts.  
-This removes the need for manual Whitelisting and can still be restricted by using an Access Role.
+- **Self Whitelisting**  
+Players can whitelist themselves by Linking their Discord and Minecraft Accounts.  
+This removes the need for manual Whitelisting and can be restricted or turned off in the Config.
 
 ####
 
 - **Fast & Easy Account Linking**  
-It only takes a few Seconds and is very Easy to do.  
-Generate a code on Discord, enter it in Minecraft, and you’re already Done.
+Only takes a few Seconds and is very Easy to do.  
+Just Enter your Code on Discord, and you’re already Done.
 
 ####
 
@@ -29,14 +29,14 @@ This makes managing Server Access to Players very Simple.
 ####
 
 - **Admin Account Management**  
-Admins can easily remove Linked Accounts by either Kicking the User from the Discord Server or taking away their Whitelist/Access Role.  
+Admins can easily remove Linked Accounts by taking away their Whitelist/Access Role or using the Add/Rem Whitelist Command.  
 This makes Moderation and Account Management Simpler and Efficient.
 
 ####
 
 - **Automatic Nicknames**  
 When a Player Links their Account, their Discord Nickname is automatically Updated to their Minecraft Username every 15 Minutes.  
-This makes Identifying Players on the Discord Server Effortless and helps with Moderation.
+This lets you easily Identify Players on the Discord Server.
 
 
 <hr/>
@@ -55,14 +55,15 @@ This makes Identifying Players on the Discord Server Effortless and helps with M
 
 ### Admin Commands (DC + MC):
 ```
-/forceunlink <Player> [<Remove-Access-Role>] - Unlink another Player's Account
+/addwhitelist <Minecraft_Username> <Discord-Username> - Add a player to the Whitelist
+/remwhitelist <Minecraft_Username> - Remove a Player from the Whitelist
 ```
 
 ### Permissions:
 ```
-dcwhitelistlinker.linkdc (Default: true) - Allow Linking a Discord-Account
 dcwhitelistlinker.unlinkdc (Default: true) - Allow UnLinking a Discord-Account
-dcwhitelistlinker.forceunlink (Default: false) - Allow Force UnLinking another User's Discord-Account
+dcwhitelistlinker.addwhitelist (Default: op) - Allow adding other Players to the Whitelist
+dcwhitelistlinker.remwhitelist (Default: op) - Allow removing a Players from the Whitelist
 ```
 
 ### Config:
@@ -70,6 +71,7 @@ dcwhitelistlinker.forceunlink (Default: false) - Allow Force UnLinking another U
 bot-token - Your Discord Bot-Token
 server-id - ID of your Discord Server
 whitelist-role-id - ID of the Whitelist Role
+admin-only-mode - If only Admins should be able to Link Accounts
 require-access-role - If Linking should require a specific Access Role
 remove-access-role-on-unlink - If the Access Role should also be removed when UnLinking
 access-role-id - ID of the Access Role

@@ -8,11 +8,16 @@ commands:
     usage: /unlinkdc
     permission: dcwhitelistlinker.unlinkdc
     permission-message: You do not have access to this command.
-  forceunlink:
-    description: Unlink another Player's Discord Account.
-    usage: /forceunlink <target> [<remove-access-role>]
-    permission: dcwhitelistlinker.forceunlink
-    permission-message: You do not have access to this command.
+  addwhitelist:
+    description: Add a Player to the linked Whitelist
+    usage: /addwhitelist <Minecraft_Username> <Discord-Username>
+    permission: dcwhitelistlinker.addwhitelist
+    permission-message: You do not have access to this command
+  remwhitelist:
+    description: Remove a Player from the linked Whitelist
+    usage: /remwhitelist <Minecraft_Username>
+    permission: dcwhitelistlinker.remwhitelist
+    permission-message: You do not have access to this command
 permissions:
   dcwhitelistlinker.player:
     description: Allows use of all Player Commands
@@ -27,7 +32,11 @@ permissions:
     description: Allows use of Admin Commands
     default: op
     children:
-      dcwhitelistlinker.forceunlink: true
-  dcwhitelistlinker.forceunlink:
-    description: Allows use of the ForceUnLink Command
+      dcwhitelistlinker.addwhitelist: true
+      dcwhitelistlinker.remwhitelist: true
+  dcwhitelistlinker.addwhitelist:
+    description: Allows use of the AddWhitelist Command
+    default: op
+  dcwhitelistlinker.remwhitelist:
+    description: Allows use of the RemWhitelist Command
     default: op

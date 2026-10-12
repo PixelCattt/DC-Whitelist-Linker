@@ -15,6 +15,10 @@ server-id: YOUR-SERVER-ID-HERE
 # Must be a Discord Role-ID
 whitelist-role-id: YOUR-ROLE-ID-HERE
 
+# If only Admins can Link Accounts (Default: false)
+# Must be true or false
+admin-only-mode: false
+
 # If the Access Role is Required to Link (Default: false)
 # Must be true or false
 require-access-role: false
