@@ -20,7 +20,7 @@ public class CommandHandler implements CommandExecutor {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-
+        try {
         switch (command.getName()) {
             case "unlinkdc":
                 if (plugin.adminOnlyMode) {
@@ -37,19 +37,18 @@ public class CommandHandler implements CommandExecutor {
 
                 if (player.hasPermission("dcwhitelistlinker.unlinkdc")) {
                     String mcUUID = player.getUniqueId().toString();
-
-                    if (!mcUUID.equals("ERROR")) {
-                        String dcUUID = manager.getDiscordUUID(UUID.fromString(mcUUID));
-
-                        if (!dcUUID.equals("ERROR")) {
-                            sender.sendMessage("§aUnlinking your Discord-Account: " + manager.getDiscordName(UUID.fromString(mcUUID)));
-                            manager.startUnLinking(dcUUID, mcUUID);
-                        } else {
-                            sender.sendMessage("§cYou do not have a linked Discord-Account.");
+                    manager.dbWorker.execute(() -> {
+                        java.util.Optional<WhitelistManager.LinkedAccount> account = manager.findLinkedAccountByMinecraftId(mcUUID);
+                        if (account.isEmpty()) {
+                            org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage("§cYou do not have a linked Discord-Account."));
+                            return;
                         }
-                    } else {
-                        sender.sendMessage("§cFailed to determine your UUID!");
-                    }
+                        manager.startUnLinking(account.get().discordId(), mcUUID).whenComplete((success, error) ->
+                                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
+                                        error == null && Boolean.TRUE.equals(success)
+                                                ? "§aUnlinked your Discord account."
+                                                : "§cCould not unlink the account. Check the server console.")));
+                    });
                 }
 
                 return true;
@@ -61,51 +60,51 @@ public class CommandHandler implements CommandExecutor {
                         String mcName = args[0];
                         String dcName = args[1];
 
-                        UUID uuid = WhitelistManager.getUUID(mcName);
-
-                        if (uuid == null) {
-                            sender.sendMessage(ChatColor.RED + "Could not find Minecraft player: " + mcName);
+                        if (!manager.dcBot.isReady()) {
+                            sender.sendMessage(ChatColor.RED + "The Discord bot is not connected yet. Please try again shortly.");
                             return true;
                         }
-
-                        String mcUUID = uuid.toString();
-                        String dcUUID = manager.getDiscordUserID(dcName);
-
-                        if (dcUUID.equals("ERROR")) {
+                        java.util.Optional<String> discordId = manager.getDiscordUserID(dcName);
+                        if (discordId.isEmpty()) {
                             sender.sendMessage(ChatColor.RED + "Could not find Discord user: " + dcName);
                             return true;
                         }
+                        String dcUUID = discordId.get();
 
-                        boolean discordAlreadyLinked = manager.linkedMinecraftAccountExists(dcUUID);
-                        boolean minecraftAlreadyLinked = manager.linkedDiscordAccountExists(mcUUID);
-
-                        if (!discordAlreadyLinked && !minecraftAlreadyLinked) {
-                            manager.createLink(dcUUID, dcName, mcUUID, mcName);
-
-                            sender.sendMessage(ChatColor.GREEN
-                                    + "Successfully linked "
-                                    + mcName
-                                    + " to "
-                                    + dcName);
-
-                        } else if (discordAlreadyLinked) {
-                            String linkedMcName = manager.getMinecraftName(dcUUID);
-
-                            sender.sendMessage(ChatColor.RED
-                                    + "Discord account "
-                                    + dcName
-                                    + " is already linked to Minecraft account: "
-                                    + linkedMcName);
-
-                        } else {
-                            String linkedDcName = manager.getDiscordNameFromMinecraftUUID(mcUUID);
-
-                            sender.sendMessage(ChatColor.RED
-                                    + "Minecraft account "
-                                    + mcName
-                                    + " is already linked to Discord account: "
-                                    + linkedDcName);
-                        }
+                        manager.resolveMinecraftUUIDAsync(mcName).whenComplete((uuid, resolutionError) -> {
+                            if (resolutionError != null) {
+                                plugin.getLogger().warning("Could not resolve Minecraft UUID for " + mcName + ": " + resolutionError.getMessage());
+                                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(ChatColor.RED + "Could not resolve the Minecraft account. Try again or check the server logs."));
+                                return;
+                            }
+                            if (uuid == null) {
+                                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(ChatColor.RED
+                                        + "Could not resolve a definitive Minecraft UUID. No link was created; check LibreLogin UUID mode, Floodgate, and lookup availability."));
+                                return;
+                            }
+                            manager.dbWorker.execute(() -> {
+                                String message;
+                                try {
+                                    boolean discordAlreadyLinked = manager.linkedMinecraftAccountExistsStrict(dcUUID);
+                                    boolean minecraftAlreadyLinked = manager.linkedDiscordAccountExistsStrict(uuid.toString());
+                                    if (discordAlreadyLinked) {
+                                        message = ChatColor.RED + "Discord account " + dcName + " is already linked.";
+                                    } else if (minecraftAlreadyLinked) {
+                                        message = ChatColor.RED + "Minecraft account " + mcName + " is already linked.";
+                                    } else {
+                                        boolean linked = manager.createLink(dcUUID, dcName, uuid.toString(), mcName);
+                                        message = linked
+                                                ? ChatColor.GREEN + "Successfully linked " + mcName + " to " + dcName
+                                                : ChatColor.RED + "Discord could not apply the whitelist role or save the link. Check the server console and bot permissions.";
+                                    }
+                                } catch (RuntimeException error) {
+                                    plugin.getLogger().warning("/addwhitelist failed: " + error.getMessage());
+                                    message = ChatColor.RED + "The command failed due to a database or Discord error. Check the server console.";
+                                }
+                                String resultMessage = message;
+                                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(resultMessage));
+                            });
+                        });
 
                     } else {
                         sender.sendMessage(ChatColor.RED
@@ -134,47 +133,37 @@ public class CommandHandler implements CommandExecutor {
                 }
 
                 String targetMcName = args[0];
-                String targetMcUUID = manager.getMinecraftUuidFromName(targetMcName);
-
-                if (targetMcUUID.equals("ERROR")) {
-                    sender.sendMessage(ChatColor.RED
-                            + "Could not find Minecraft player: "
-                            + targetMcName);
-                    return true;
-                }
-
-                String targetDcUUID = manager.getDiscordUuidFromMcName(targetMcName);
-
-                if (targetDcUUID.equals("ERROR")) {
-                    sender.sendMessage(ChatColor.RED
-                            + "Minecraft account "
-                            + targetMcName
-                            + " does not have a linked Discord account.");
-                    return true;
-                }
-
-                String targetDcName = manager.getDiscordNameFromUUID(targetDcUUID);
-
-                if (manager.linkedMinecraftAccountExists(targetDcUUID) && manager.linkedDiscordAccountExists(targetMcUUID)) {
-                    manager.startUnLinking(targetDcUUID, targetMcUUID);
-
-                    sender.sendMessage(ChatColor.GREEN
-                            + "Successfully unlinked "
-                            + targetMcName
-                            + " from "
-                            + targetDcName
-                            + ".");
-
-                } else {
-                    sender.sendMessage(ChatColor.RED
-                            + "Minecraft account "
-                            + targetMcName
-                            + " is not linked to any Discord Account.");
-                }
+                manager.dbWorker.execute(() -> {
+                    try {
+                        java.util.Optional<WhitelistManager.LinkedAccount> account = manager.findLinkedAccountByMinecraftName(targetMcName);
+                        String message;
+                        if (account.isPresent()) {
+                            WhitelistManager.LinkedAccount linked = account.get();
+                            manager.startUnLinking(linked.discordId(), linked.minecraftId()).whenComplete((success, error) -> {
+                                String response = error == null && Boolean.TRUE.equals(success)
+                                        ? ChatColor.GREEN + "Successfully unlinked " + linked.minecraftName() + " from " + linked.discordName() + "."
+                                        : ChatColor.RED + "Could not unlink the account. Check the server console.";
+                                org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(response));
+                            });
+                            return;
+                        } else {
+                            message = ChatColor.RED + "Minecraft account " + targetMcName + " is not linked to any Discord Account.";
+                        }
+                        String resultMessage = message;
+                        org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(resultMessage));
+                    } catch (RuntimeException error) {
+                        plugin.getLogger().warning("/remwhitelist failed: " + error.getMessage());
+                        org.bukkit.Bukkit.getScheduler().runTask(plugin, () -> sender.sendMessage(
+                                ChatColor.RED + "The command failed due to a database error. Check the server console."));
+                    }
+                });
 
                 return true;
         }
-
+        } catch (RuntimeException e) {
+            plugin.getLogger().warning("Command /" + command.getName() + " failed: " + e.getMessage());
+            sender.sendMessage(ChatColor.RED + "The command failed due to a database or integration error. Check the server console.");
+        }
 
         return true;
     }

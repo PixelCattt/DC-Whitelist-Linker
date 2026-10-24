@@ -8,6 +8,7 @@ import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.UUID;
+import java.sql.SQLException;
 
 
 public class LoginListener implements Listener {
@@ -24,7 +25,17 @@ public class LoginListener implements Listener {
     public void onPreLogin(AsyncPlayerPreLoginEvent event) {
         UUID uuid = event.getUniqueId();
 
-        if (manager.getMinecraftNameFromUUID(uuid).equals("ERROR")) {
+        final boolean linked;
+        try {
+            linked = manager.isLinkedForLogin(uuid);
+        } catch (SQLException databaseError) {
+            plugin.getLogger().severe("Database lookup failed during player login; rejecting login safely: " + databaseError.getMessage());
+            event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_OTHER,
+                    "Whitelist service is temporarily unavailable. Please try again shortly.");
+            return;
+        }
+
+        if (!linked) {
             if (plugin.adminOnlyMode) {
                 if (Bukkit.getOfflinePlayer(uuid).isOp()) {
                     return;
@@ -38,13 +49,12 @@ public class LoginListener implements Listener {
                 return;
             }
 
-            if (!manager.isLinking(uuid.toString())) {
-                String authCode = genAuthCode();
-
-                showLinkingMessage(event, authCode);
-                manager.startLinking(uuid.toString(), event.getName(), authCode, Instant.now().plusSeconds(5 * 60).getEpochSecond());
-            } else {
-                showLinkingMessage(event, manager.getExistingAuthCode(uuid.toString()));
+            try {
+                showLinkingMessage(event, manager.getOrCreateAuthCode(uuid, event.getName()));
+            } catch (SQLException databaseError) {
+                plugin.getLogger().severe("Could not create a linking code: " + databaseError.getMessage());
+                event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_OTHER,
+                        "Whitelist service is temporarily unavailable. Please try again shortly.");
             }
         }
     }

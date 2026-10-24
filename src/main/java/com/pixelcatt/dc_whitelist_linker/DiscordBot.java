@@ -26,6 +26,7 @@ import net.dv8tion.jda.api.utils.MemberCachePolicy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.logging.Level;
 
 
 public class DiscordBot extends ListenerAdapter {
@@ -54,11 +55,7 @@ public class DiscordBot extends ListenerAdapter {
         try {
             jda = JDABuilder.createDefault(botToken)
                     .enableIntents(
-                            GatewayIntent.GUILD_MEMBERS,
-                            GatewayIntent.GUILD_PRESENCES,
-                            GatewayIntent.GUILD_MESSAGES,
-                            GatewayIntent.GUILD_MODERATION,
-                            GatewayIntent.MESSAGE_CONTENT
+                            GatewayIntent.GUILD_MEMBERS
                     )
                     .setMemberCachePolicy(MemberCachePolicy.ALL)
                     .setChunkingFilter(ChunkingFilter.ALL)
@@ -91,12 +88,17 @@ public class DiscordBot extends ListenerAdapter {
                 }
             }.runTaskLater(plugin, 50L);
         } catch (Exception e) {
-            e.printStackTrace();
+            plugin.getLogger().log(Level.SEVERE, "Could not initialize the Discord bot", e);
         }
+    }
+
+    public boolean isReady() {
+        return jda != null && jda.getStatus() == JDA.Status.CONNECTED;
     }
 
     public void UpdateAllMembersTask() {
         Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            if (!isReady()) return;
             Runnable syncTask = () -> manager.getAllLinkedAccountsAsync().thenAccept(linkedAccounts -> {
                 Guild guild = jda.getGuildById(guildId);
 
@@ -122,6 +124,12 @@ public class DiscordBot extends ListenerAdapter {
 
                         Member member = guild.getMemberById(dcUUID);
 
+                        // The server owner cannot be modified by the bot and is exempt from
+                        // automated role cleanup regardless of configured roles.
+                        if (dcUUID.equals(guild.getOwnerId())) {
+                            continue;
+                        }
+
                         boolean shouldUnlink = member == null || member.getRoles().stream().noneMatch(r -> r.getId().equals(whitelistRoleId));
 
                         if (!plugin.adminOnlyMode) {
@@ -134,9 +142,12 @@ public class DiscordBot extends ListenerAdapter {
                             continue;
                         }
 
-                        member.modifyNickname(mcName).queue();
+                        if (!dcUUID.equals(guild.getOwnerId())) member.modifyNickname(mcName).queue();
                     }
                 }
+            }).exceptionally(error -> {
+                plugin.getLogger().severe("Periodic account sync skipped because the database read failed: " + error.getMessage());
+                return null;
             });
 
             if (plugin.adminOnlyMode) {
@@ -150,41 +161,55 @@ public class DiscordBot extends ListenerAdapter {
         }, 0L, 15 * 60 * 20L);
     }
 
-    public String getUserID(String name) {
+    public java.util.Optional<String> getUserID(String name) {
+        if (!isReady()) return java.util.Optional.empty();
         Guild guild = jda.getGuildById(guildId);
 
         if (guild != null) {
             Member member = guild.getMembers().stream()
-                    .filter(m -> m.getUser().getName().equals(name))
+                    .filter(m -> m.getUser().getName().equalsIgnoreCase(name))
                     .findFirst()
                     .orElse(null);
 
             if (member != null) {
-                return member.getId();
+                return java.util.Optional.of(member.getId());
             }
         }
 
-        return "ERROR";
+        return java.util.Optional.empty();
     }
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
-        if (event.getGuild() != null) {
-            if (event.getGuild().getId().equals(guildId)) {
+        event.deferReply(true).queue();
+        try {
+        if (event.getGuild() == null) {
+            event.getHook().editOriginal("This command can only be used in the configured Discord server.").queue();
+            return;
+        }
+        if (event.getGuild().getId().equals(guildId)) {
                 String commandName = event.getName();
 
                 if ("addwhitelist".equals(commandName) || "remwhitelist".equals(commandName)) {
-                    handleWhitelistSlashCommand(event);
+                    manager.dbWorker.execute(() -> {
+                        try {
+                            handleWhitelistSlashCommand(event);
+                        } catch (RuntimeException error) {
+                            plugin.getLogger().warning("/" + commandName + " failed: " + error.getMessage());
+                            event.getHook().editOriginal("Command failed because of a database or Discord error. Check the server console.").queue();
+                        }
+                    });
                     return;
                 }
 
                 if (plugin.adminOnlyMode) {
+                    event.getHook().editOriginal("Account linking commands are disabled in Admin-Only Mode.").queue();
                     return;
                 }
 
                 if (useLinkingChannel) {
                     if (!event.getChannel().getId().equals(linkingChannelId)) {
-                        event.reply("Please use the <#" + linkingChannelId + "> Channel for Linking Commands!").setEphemeral(true).queue();
+                        event.getHook().editOriginal("Please use the <#" + linkingChannelId + "> Channel for Linking Commands!").queue();
                         return;
                     }
                 }
@@ -192,38 +217,46 @@ public class DiscordBot extends ListenerAdapter {
                 switch (commandName) {
                     case "linkmc":
                         String authCode = event.getOption("auth_code", OptionMapping::getAsString);
+                        if (authCode != null) authCode = authCode.trim().toUpperCase(java.util.Locale.ROOT);
 
                         if (authCode != null) {
                             if (accessRoleRequired) {
                                 Member member = event.getMember();
                                 if (member != null) {
                                     if (member.getRoles().stream().noneMatch(role -> role.getId().equals(accessRoleId))) {
-                                        event.reply("The <@&" + accessRoleId + "> Role is required to Link your Account!").setEphemeral(true).queue();
+                                        event.getHook().editOriginal("The <@&" + accessRoleId + "> Role is required to Link your Account!").queue();
                                         return;
                                     }
                                 } else {
-                                    event.reply("Failed to get your User Data! Please try Again.").setEphemeral(true).queue();
+                                    event.getHook().editOriginal("Failed to get your User Data! Please try Again.").queue();
                                     return;
                                 }
                             }
 
-                            String mcName = manager.getMinecraftName(event.getUser().getId());
-
-                            if (mcName.equals("ERROR")) {
-                                if (manager.authCodeValid(authCode)) {
-                                    if (manager.finishLinking(authCode, event.getUser().getId(), event.getUser().getName())) {
-                                        event.reply("Successfully linked your Minecraft-Account!").setEphemeral(true).queue();
+                            String discordId = event.getUser().getId();
+                            String discordName = event.getUser().getName();
+                            String code = authCode;
+                            manager.dbWorker.execute(() -> {
+                                String response;
+                                try {
+                                    if (manager.isDiscordAccountLinkedForCommand(discordId)) {
+                                        response = "You already have a linked Minecraft-Account!";
+                                    } else if (!manager.authCodeValid(code)) {
+                                        response = "Invalid or Expired Auth-Code!";
                                     } else {
-                                        event.reply("Failed to Link your Minecraft-Account!").setEphemeral(true).queue();
+                                        response = manager.finishLinking(code, discordId, discordName)
+                                                ? "Successfully linked your Minecraft-Account!"
+                                                : "Failed to link your Minecraft-Account. Check the server console and bot role permissions.";
                                     }
-                                } else {
-                                    event.reply("Invalid or Expired Auth-Code!").setEphemeral(true).queue();
+                                } catch (RuntimeException error) {
+                                    plugin.getLogger().warning("/linkmc failed: " + error.getMessage());
+                                    response = "Link failed because of a database or Discord error. Check the server console.";
                                 }
-                            } else {
-                                event.reply("You already have a linked Minecraft-Account!").setEphemeral(true).queue();
-                            }
+                                String resultMessage = response;
+                                event.getHook().editOriginal(resultMessage).queue();
+                            });
                         } else {
-                            event.reply("Please enter a Valid Auth-Code!").setEphemeral(true).queue();
+                            event.getHook().editOriginal("Please enter a Valid Auth-Code!").queue();
                         }
 
                         break;
@@ -231,23 +264,35 @@ public class DiscordBot extends ListenerAdapter {
 
                     case "unlinkmc":
                         String dcUUID = event.getUser().getId();
-
-                        if (!dcUUID.equals("ERROR")) {
-                            String mcUUID = manager.getMinecraftUUID(dcUUID);
-
-                            if (!mcUUID.equals("ERROR")) {
-                                event.reply("Unlinking your Minecraft-Account: " + manager.getMinecraftName(dcUUID)).setEphemeral(true).queue();
-                                manager.startUnLinking(dcUUID, mcUUID);
-                            } else {
-                                event.reply("You do not have a linked Minecraft-Account.").setEphemeral(true).queue();
+                        manager.dbWorker.execute(() -> {
+                            try {
+                                java.util.Optional<WhitelistManager.LinkedAccount> account = manager.findLinkedAccountByDiscordId(dcUUID);
+                                if (account.isEmpty()) {
+                                    event.getHook().editOriginal("You do not have a linked Minecraft-Account.").queue();
+                                    return;
+                                }
+                                WhitelistManager.LinkedAccount linked = account.get();
+                                manager.startUnLinking(dcUUID, linked.minecraftId()).whenComplete((success, error) ->
+                                        event.getHook().editOriginal(error == null && Boolean.TRUE.equals(success)
+                                                ? "Unlinked your Minecraft account: " + linked.minecraftName()
+                                                : "Could not unlink your Minecraft account. Check the server console.").queue());
+                            } catch (RuntimeException error) {
+                                plugin.getLogger().warning("/unlinkmc failed: " + error.getMessage());
+                                event.getHook().editOriginal("Unlink failed because of a database error. Check the server console.").queue();
                             }
-                        } else {
-                            event.reply("Failed to determine your UUID!").setEphemeral(true).queue();
-                        }
+                        });
 
                         break;
+                    default:
+                        event.getHook().editOriginal("Unknown command.").queue();
+                        break;
                 }
-            }
+        } else {
+            event.getHook().editOriginal("This command is not available in this Discord server.").queue();
+        }
+        } catch (RuntimeException e) {
+            plugin.getLogger().warning("Slash command failed: " + e.getMessage());
+            event.getHook().editOriginal("The command failed while processing. Please check the server console and try again.").queue();
         }
     }
 
@@ -255,7 +300,7 @@ public class DiscordBot extends ListenerAdapter {
         switch (event.getName()) {
             case "addwhitelist":
                 if (!event.getMember().hasPermission(Permission.ADMINISTRATOR)) {
-                    event.reply("You do not have permission to run this command!").setEphemeral(true).queue();
+                    event.getHook().editOriginal("You do not have permission to run this command!").queue();
                     return;
                 }
 
@@ -263,53 +308,47 @@ public class DiscordBot extends ListenerAdapter {
                 String mcName = event.getOption("minecraft_name", OptionMapping::getAsString);
 
                 if (discordUser == null || mcName == null) {
-                    event.reply("Please provide both a Discord user and Minecraft name!").setEphemeral(true).queue();
+                    event.getHook().editOriginal("Please provide both a Discord user and Minecraft name!").queue();
                     return;
                 }
 
                 String dcUUID = discordUser.getId();
-                UUID uuid = WhitelistManager.getUUID(mcName);
+                manager.resolveMinecraftUUIDAsync(mcName).whenComplete((uuid, resolutionError) -> {
+                    if (resolutionError != null || uuid == null) {
+                        if (resolutionError != null) plugin.getLogger().warning("Could not resolve Minecraft UUID for " + mcName + ": " + resolutionError.getMessage());
+                        event.getHook().editOriginal("Could not resolve a definitive Minecraft UUID. No link was created; check LibreLogin UUID mode, Floodgate, and lookup availability.").queue();
+                        return;
+                    }
+                    manager.dbWorker.execute(() -> {
+                        try {
+                            boolean discordLinked = manager.linkedMinecraftAccountExistsStrict(dcUUID);
+                            boolean minecraftLinked = manager.linkedDiscordAccountExistsStrict(uuid.toString());
 
-                if (uuid == null) {
-                    event.reply("Could not find Minecraft player with name: " + escapeDiscordFormatting(mcName))
-                            .setEphemeral(true)
-                            .queue();
-                    return;
-                }
-
-                String mcUUID = uuid.toString();
-                boolean discordLinked = manager.linkedMinecraftAccountExists(dcUUID);
-                boolean minecraftLinked = manager.linkedDiscordAccountExists(mcUUID);
-
-                if (!discordLinked && !minecraftLinked) {
-                    manager.createLink(dcUUID, discordUser.getName(), mcUUID, mcName);
-
-                    event.reply("Successfully linked " + escapeDiscordFormatting(mcName) + " to <@" + dcUUID + ">!")
-                            .setEphemeral(true)
-                            .queue();
-
-                } else if (discordLinked) {
-                    String linkedMcName = manager.getMinecraftName(dcUUID);
-
-                    event.reply("Discord account <@" + dcUUID + "> is already linked to Minecraft account: "
-                                    + escapeDiscordFormatting(linkedMcName))
-                            .setEphemeral(true)
-                            .queue();
-
-                } else {
-                    String linkedDcName = manager.getDiscordNameFromMinecraftUUID(mcUUID);
-
-                    event.reply("Minecraft account: " + escapeDiscordFormatting(mcName)
-                                    + " is already linked to Discord account: "
-                                    + linkedDcName)
-                            .setEphemeral(true)
-                            .queue();
-                }
+                            if (discordLinked) {
+                                String linkedMcName = manager.getMinecraftName(dcUUID).orElse("an existing Minecraft account");
+                                event.getHook().editOriginal("Discord account <@" + dcUUID + "> is already linked to Minecraft account: "
+                                        + escapeDiscordFormatting(linkedMcName)).queue();
+                            } else if (minecraftLinked) {
+                                String linkedDcName = manager.getDiscordName(uuid).orElse("an existing Discord account");
+                                event.getHook().editOriginal("Minecraft account: " + escapeDiscordFormatting(mcName)
+                                        + " is already linked to Discord account: " + escapeDiscordFormatting(linkedDcName)).queue();
+                            } else if (manager.createLink(dcUUID, discordUser.getName(), uuid.toString(), mcName)) {
+                                event.getHook().editOriginal("Successfully linked " + escapeDiscordFormatting(mcName)
+                                        + " to <@" + dcUUID + ">!").queue();
+                            } else {
+                                event.getHook().editOriginal("Link failed. The bot could not apply the Discord changes; check the server console and bot permissions.").queue();
+                            }
+                        } catch (RuntimeException error) {
+                            plugin.getLogger().warning("Discord addwhitelist failed: " + error.getMessage());
+                            event.getHook().editOriginal("The link failed because of a database or Discord error. Please check the server console.").queue();
+                        }
+                    });
+                });
                 break;
 
             case "remwhitelist":
                 if (!event.getMember().hasPermission(Permission.ADMINISTRATOR)) {
-                    event.reply("You do not have permission to run this command!").setEphemeral(true).queue();
+                    event.getHook().editOriginal("You do not have permission to run this command!").queue();
                     return;
                 }
 
@@ -317,60 +356,28 @@ public class DiscordBot extends ListenerAdapter {
                 String mcNameOption = event.getOption("minecraft_name", OptionMapping::getAsString);
 
                 if (userOption == null && mcNameOption == null) {
-                    event.reply("Please provide atleast one of Discord user and Minecraft name!").setEphemeral(true).queue();
+                    event.getHook().editOriginal("Please provide atleast one of Discord user and Minecraft name!").queue();
                     return;
                 }
 
-                String targetMcUUID;
-                String targetMcName;
-                String targetDcUUID;
-                String targetDcName;
-
-                if (userOption != null && mcNameOption != null) {
-                    targetMcUUID = manager.getMinecraftUuidFromName(mcNameOption);
-                    targetMcName = mcNameOption;
-                    targetDcUUID = userOption.getId();
-                    targetDcName = userOption.getName();
-
-                    if (targetMcUUID.equals("ERROR")) {
-                        event.reply("Discord account <@" + targetDcUUID + "> does not have a linked Minecraft account.").setEphemeral(true).queue();
-                        return;
-                    }
-
-                } else if (mcNameOption == null) {
-                    targetDcUUID = userOption.getId();
-                    targetDcName = userOption.getName();
-                    targetMcUUID = manager.getMinecraftUUID(targetDcUUID);
-                    targetMcName = manager.getMinecraftName(targetDcUUID);
-
-                    if (targetMcUUID.equals("ERROR")) {
-                        event.reply("Discord account <@" + targetDcUUID + "> does not have a linked Minecraft account.").setEphemeral(true).queue();
-                        return;
-                    }
-                } else {
-                    targetMcUUID = manager.getMinecraftUuidFromName(mcNameOption);
-                    targetMcName = mcNameOption;
-
-                    if (targetMcUUID.equals("ERROR")) {
-                        event.reply("Could not find Minecraft player with name: " + targetMcName).setEphemeral(true).queue();
-                        return;
-                    }
-
-                    targetDcUUID = manager.getDiscordUuidFromMcName(targetMcName);
-                    targetDcName = manager.getDiscordNameFromUUID(targetDcUUID);
-
-                    if (targetDcUUID.equals("ERROR")) {
-                        event.reply("Minecraft account " + escapeDiscordFormatting(targetMcName) + " does not have a linked Discord account.").setEphemeral(true).queue();
-                        return;
-                    }
+                java.util.Optional<WhitelistManager.LinkedAccount> found = mcNameOption != null
+                        ? manager.findLinkedAccountByMinecraftName(mcNameOption)
+                        : manager.findLinkedAccountByDiscordId(userOption.getId());
+                if (found.isEmpty()) {
+                    event.getHook().editOriginal("No matching linked account was found.").queue();
+                    return;
                 }
-
-                if (manager.linkedMinecraftAccountExists(targetDcUUID) && manager.linkedDiscordAccountExists(targetMcUUID)) {
-                    manager.startUnLinking(targetDcUUID, targetMcUUID);
-                    event.reply("Successfully unlinked " + escapeDiscordFormatting(targetMcName) + " from <@" + targetDcUUID + ">!").setEphemeral(true).queue();
-                } else {
-                    event.reply(targetMcName + " is not linked to Discord account: " + targetDcName).setEphemeral(true).queue();
+                WhitelistManager.LinkedAccount linked = found.get();
+                if (userOption != null && !linked.discordId().equals(userOption.getId())) {
+                    event.getHook().editOriginal("That Minecraft account is linked to a different Discord account.").queue();
+                    return;
                 }
+                String responseMcName = linked.minecraftName();
+                String responseDcUUID = linked.discordId();
+                manager.startUnLinking(linked.discordId(), linked.minecraftId()).whenComplete((success, error) ->
+                        event.getHook().editOriginal(error == null && Boolean.TRUE.equals(success)
+                                ? "Successfully unlinked " + escapeDiscordFormatting(responseMcName) + " from <@" + responseDcUUID + ">!"
+                                : "Could not unlink the account. Check the server console.").queue());
                 break;
         }
     }
@@ -397,20 +404,29 @@ public class DiscordBot extends ListenerAdapter {
                             boolean hasMemberRole = member.getRoles().stream()
                                     .anyMatch(r -> r.getId().equals(whitelistRoleId));
 
+                            if (userId.equals(event.getGuild().getOwnerId())) {
+                                return;
+                            }
+
                             boolean shouldUnlink = !hasMemberRole;
 
-                            if (!plugin.adminOnlyMode) {
+                            if (!plugin.adminOnlyMode && accessRoleRequired) {
                                 boolean hasAccessRole = member.getRoles().stream()
                                         .anyMatch(r -> r.getId().equals(accessRoleId));
-                                shouldUnlink = !hasAccessRole || !hasMemberRole;
+                                shouldUnlink = shouldUnlink || !hasAccessRole;
                             }
 
                             if (shouldUnlink) {
-                                String mcUUID = manager.getMinecraftUUID(userId);
-                                if (mcUUID != null && !mcUUID.equals("ERROR")) {
-                                    plugin.getLogger().info("Auto Unlinking Discord User: " + userName);
-                                    manager.startUnLinking(userId, mcUUID);
-                                }
+                                manager.dbWorker.execute(() -> {
+                                    try {
+                                        manager.findLinkedAccountByDiscordId(userId).ifPresent(account -> {
+                                            plugin.getLogger().info("Auto Unlinking Discord User: " + userName);
+                                            manager.startUnLinking(userId, account.minecraftId());
+                                        });
+                                    } catch (RuntimeException error) {
+                                        plugin.getLogger().severe("Automatic unlink failed for " + userName + ": " + error.getMessage());
+                                    }
+                                });
                             }
                         });
                     });
@@ -425,38 +441,51 @@ public class DiscordBot extends ListenerAdapter {
         }
     }
 
-    public void finishLinking(String dcUUID, String mcName) {
+    public boolean finishLinking(String dcUUID, String mcName) {
+        if (!isReady()) {
+            plugin.getLogger().warning("Cannot link accounts because the Discord bot is not connected.");
+            return false;
+        }
         try {
             Guild guild = jda.getGuildById(guildId);
 
             if (guild != null) {
+                Member member = guild.retrieveMemberById(dcUUID).complete();
+                if (member == null) {
+                    plugin.getLogger().info("Error: Member not Found.");
+                    return false;
+                }
+                if (dcUUID.equals(guild.getOwnerId())) return true;
                 Role role = guild.getRoleById(whitelistRoleId);
 
                 if (role != null) {
-                    Member member = guild.retrieveMemberById(dcUUID).complete();
-
-                    if (member != null) {
-                        if (botRoleHighEnoughToManage(guild, member)) {
-                            guild.addRoleToMember(member, role).queue();
-                            guild.modifyNickname(member, mcName).queue();
-                        } else {
-                            plugin.getLogger().info("Linking Error: Bot's Highest Role is not Higher than Linked Member's Highest Role!");
-                        }
+                    if (botRoleHighEnoughToManage(guild, member)) {
+                        guild.addRoleToMember(member, role).complete();
+                        guild.modifyNickname(member, mcName).complete();
+                        return true;
                     } else {
-                        plugin.getLogger().info("Error: Member not Found.");
+                        plugin.getLogger().info("Linking Error: Bot's Highest Role is not Higher than Linked Member's Highest Role!");
+                        return false;
                     }
                 } else {
                     plugin.getLogger().info("Error: Whitelist Role not Found.");
+                    return false;
                 }
             } else {
                 plugin.getLogger().info("Error: Guild not Found.");
+                return false;
             }
-        } catch (ErrorResponseException e) {
-            plugin.getLogger().info("Error: " + e.getMessage());
+        } catch (RuntimeException e) {
+            plugin.getLogger().warning("Could not apply Discord linking changes: " + e.getMessage());
+            return false;
         }
     }
 
-    public void finishUnLinking(String dcUUID) {
+    public boolean finishUnLinking(String dcUUID) {
+        if (!isReady()) {
+            plugin.getLogger().warning("Cannot unlink accounts because the Discord bot is not connected.");
+            return false;
+        }
         try {
             Guild guild = jda.getGuildById(guildId);
 
@@ -467,48 +496,72 @@ public class DiscordBot extends ListenerAdapter {
                     Member member = guild.retrieveMemberById(dcUUID).complete();
 
                     if (member != null) {
+                        if (dcUUID.equals(guild.getOwnerId())) return true;
                         if (botRoleHighEnoughToManage(guild, member)) {
-                            guild.removeRoleFromMember(member, role).queue();
-                            guild.modifyNickname(member, null).queue();
+                            guild.removeRoleFromMember(member, role).complete();
+                            if (!dcUUID.equals(guild.getOwnerId())) {
+                                guild.modifyNickname(member, null).complete();
+                            }
+                            return true;
                         } else {
                             plugin.getLogger().info("UnLinking Error: Bot's Highest Role is not Higher than Linked Member's Highest Role!");
+                            return false;
                         }
                     } else {
                         plugin.getLogger().info("Error: Member not Found.");
+                        return false;
                     }
                 } else {
                     plugin.getLogger().info("Error: Whitelist Role not Found.");
+                    return false;
                 }
             } else {
                 plugin.getLogger().info("Error: Guild not Found.");
+                return false;
             }
         } catch (ErrorResponseException e) {
             plugin.getLogger().info("Error: " + e.getMessage());
+            return false;
         }
     }
 
-    public void removeAccessRole(String dcUUID) {
-        if (accessRoleRequired) {
+    public boolean removeAccessRole(String dcUUID) {
+        if (!isReady()) {
+            plugin.getLogger().warning("Cannot update Discord roles because the Discord bot is not connected.");
+            return false;
+        }
+        if (accessRoleRequired && removeAccessRoleOnUnlink) {
             Guild guild = jda.getGuildById(guildId);
 
             if (guild != null) {
                 Role role = guild.getRoleById(accessRoleId);
 
                 if (role != null) {
+                    try {
                     Member member = guild.retrieveMemberById(dcUUID).complete();
 
                     if (member != null) {
-                        guild.removeRoleFromMember(member, role).queue();
+                        if (dcUUID.equals(guild.getOwnerId())) return true;
+                        guild.removeRoleFromMember(member, role).complete();
+                        return true;
                     } else {
                         plugin.getLogger().info("Error: Member not Found.");
+                        return false;
+                    }
+                    } catch (RuntimeException e) {
+                        plugin.getLogger().warning("Could not remove access role: " + e.getMessage());
+                        return false;
                     }
                 } else {
                     plugin.getLogger().info("Error: Access Role not Found.");
+                    return false;
                 }
             } else {
                 plugin.getLogger().info("Error: Guild not Found.");
+                return false;
             }
         }
+        return true;
     }
 
     public boolean botRoleHighEnoughToManage(Guild guild, Member member) {
@@ -524,7 +577,7 @@ public class DiscordBot extends ListenerAdapter {
                     return true;
                 }
 
-                return bot.getRoles().get(0).getPosition() >= member.getRoles().get(0).getPosition();
+                        return bot.getRoles().get(0).getPosition() > member.getRoles().get(0).getPosition();
             }
         }
 
@@ -539,8 +592,6 @@ public class DiscordBot extends ListenerAdapter {
     }
 
     public void stopBot() {
-        if (jda != null) {
-            jda.shutdown();
-        }
+        if (jda != null) jda.shutdown();
     }
 }

@@ -2,6 +2,7 @@ name: DC-Whitelist-Linker
 main: com.pixelcatt.dc_whitelist_linker.DCWhitelistLinker
 version: ${project.version}
 api-version: 1.21
+depend: [OfflinePlayerLib]
 commands:
   unlinkdc:
     description: Unlink Discord Account.

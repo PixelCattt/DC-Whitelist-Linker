@@ -6,7 +6,7 @@
 
     <groupId>com.pixelcatt.dc_whitelist_linker</groupId>
     <artifactId>DC-Whitelist-Linker</artifactId>
-    <version>1.2.2</version>
+    <version>1.2.3</version>
     <packaging>jar</packaging>
 
     <name>DC-Whitelist-Linker</name>
@@ -21,6 +21,12 @@
             <groupId>org.spigotmc</groupId>
             <artifactId>spigot-api</artifactId>
             <version>1.21.10-R0.1-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.pixelcatt.offlineplayerlib</groupId>
+            <artifactId>OfflinePlayerLib</artifactId>
+            <version>1.0.0</version>
             <scope>provided</scope>
         </dependency>
         <dependency>

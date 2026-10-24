@@ -78,3 +78,5 @@ access-role-id - ID of the Access Role
 use-linking-channel - If Linking should be restricted to a specific Linking Channel
 linking-channel-id - ID of the Linking Channel
 ```
+
+The Discord bot requires the **Server Members Intent** to be enabled in the Discord Developer Portal. The plugin only requests that intent; it does not require Presence, Message Content, or moderation gateway intents.
